@@ -1,3 +1,10 @@
+## [1.0.2](https://github.com/reaandrew/packprompt/compare/v1.0.1...v1.0.2) (2025-08-10)
+
+
+### Bug Fixes
+
+* remove caching ([d8bae0c](https://github.com/reaandrew/packprompt/commit/d8bae0c65795834ab1df49777e195b21e6575464))
+
 ## [1.0.1](https://github.com/reaandrew/packprompt/compare/v1.0.0...v1.0.1) (2025-08-10)
 
 

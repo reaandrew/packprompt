@@ -1,3 +1,10 @@
+## [1.0.3](https://github.com/reaandrew/packprompt/compare/v1.0.2...v1.0.3) (2025-08-10)
+
+
+### Bug Fixes
+
+* Fix hang ([3be8e40](https://github.com/reaandrew/packprompt/commit/3be8e40f2d6d3409698ed5796a76c29ea5366a80))
+
 ## [1.0.2](https://github.com/reaandrew/packprompt/compare/v1.0.1...v1.0.2) (2025-08-10)
 
 

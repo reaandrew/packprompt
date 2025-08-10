@@ -1,8 +1,9 @@
-// github.com/reaandrew/packprompt
+// packprompt: pack a tree of text files into one prompt-safe text blob, and unpack it back.
+//
 // Usage:
 //
-//	Pack:   packprompt pack --root . --out files-prompt.txt --exclude ".git,.idea,node_modules,*.png"
-//	Unpack: packprompt unpack --in files-prompt.txt --dest ./recreated
+//	Pack:   ./packprompt pack --root . --out files-prompt.txt --exclude ".git,.idea,node_modules,*.png"
+//	Unpack: ./packprompt unpack --in files-prompt.txt --dest ./recreated
 package main
 
 import (
@@ -62,7 +63,7 @@ Commands:
   unpack [--in FILE]  [--dest DIR]
 
 Details:
-  - Skips binary files using a heuristic (NUL-byte / non-text ratio / content-type).
+  - Skips binary files and all non-regular files (FIFOs, sockets, devices, symlinks).
   - Default excludes: ` + strings.Join(defaultExcludes, ",") + `
   - Stores file mode and restores on unpack.
 `)
@@ -97,18 +98,23 @@ func packCmd(args []string) {
 			return nil
 		}
 
+		// Exclusions first
 		if excluded(rel, d, excludes) {
 			if d.IsDir() {
 				return iofs.SkipDir
 			}
 			return nil
 		}
-		if d.IsDir() {
+
+		// Only process regular files; skip dirs, symlinks, sockets, devices, FIFOs, etc.
+		if !d.Type().IsRegular() {
 			return nil
 		}
 
+		// Binary check (only on regular files)
 		bin, err := isBinaryFile(p)
 		if err != nil {
+			// unreadable -> skip quietly
 			return nil
 		}
 		if bin {
@@ -266,6 +272,7 @@ func parseExcludes(csv string) []string {
 	return out
 }
 
+// patterns with '/' match whole relative path; otherwise match basename
 func excluded(rel string, d iofs.DirEntry, patterns []string) bool {
 	base := path.Base(rel)
 	for _, pat := range patterns {
@@ -294,6 +301,7 @@ func safeRel(rel string) bool {
 	return !strings.HasPrefix(clean, "/../") && clean != "/.."
 }
 
+// Only called for regular files now; read a small sniff to classify
 func isBinaryFile(p string) (bool, error) {
 	f, err := os.Open(p)
 	if err != nil {
@@ -303,16 +311,18 @@ func isBinaryFile(p string) (bool, error) {
 
 	const sniff = 8192
 	buf := make([]byte, sniff)
-	n, _ := io.ReadFull(f, buf)
+	n, _ := io.ReadAtLeast(f, buf, 1) // read at least 1 byte; don't block for full 8K
+	buf = buf[:n]
 	if n == 0 {
 		return false, nil
 	}
-	buf = buf[:n]
 
+	// Heuristic 1: NUL byte
 	if bytes.IndexByte(buf, 0x00) >= 0 {
 		return true, nil
 	}
 
+	// Heuristic 2: MIME
 	ct := http.DetectContentType(buf)
 	if strings.Contains(ct, "application/octet-stream") ||
 		strings.Contains(ct, "application/x-executable") ||
@@ -323,6 +333,7 @@ func isBinaryFile(p string) (bool, error) {
 		return true, nil
 	}
 
+	// Heuristic 3: printable ratio
 	var nonPrintable, printable int
 	for _, r := range string(buf) {
 		if r == '\n' || r == '\r' || r == '\t' {

@@ -62,14 +62,19 @@ jobs:
           set -euo pipefail
           mkdir -p build dist
           CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "build/${EXE}" .
+
           # Use a placeholder in filenames; we’ll rename after we know the version.
           ARCHIVE_BASE="${{ env.BINARY_NAME }}_UNRELEASED_${{ matrix.goos }}_${{ matrix.goarch }}"
           if [ "${{ matrix.archive }}" = "zip" ]; then
             (cd build && zip -q "../dist/${ARCHIVE_BASE}.zip" "${EXE}")
+            ARCHIVE_PATH="dist/${ARCHIVE_BASE}.zip"
           else
             (cd build && tar -czf "../dist/${ARCHIVE_BASE}.tar.gz" "${EXE}")
+            ARCHIVE_PATH="dist/${ARCHIVE_BASE}.tar.gz"
           fi
-          (cd dist && for f in *; do sha256sum "$f" > "$f.sha256"; done)
+
+          # Create checksum only for the archive (avoid recursive hashing)
+          sha256sum "${ARCHIVE_PATH}" > "${ARCHIVE_PATH}.sha256"
 
       - name: Upload job artifacts
         uses: actions/upload-artifact@v4
@@ -100,7 +105,6 @@ jobs:
         id: sr
         uses: cycjimmy/semantic-release-action@v4
         with:
-          # Only GitHub-related plugins; no npm
           extra_plugins: |
             @semantic-release/changelog
             @semantic-release/git
@@ -128,21 +132,26 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
+
+          # 1) Rename archives (skip any .sha256 files)
           for f in dist/${BIN}_UNRELEASED_*; do
-            base="${f##*/}"               # e.g., packprompt_UNRELEASED_linux_amd64.tar.gz
-            rest="${base#${BIN}_UNRELEASED_}"  # linux_amd64.tar.gz
+            [[ -e "$f" ]] || continue
+            case "$f" in
+              *.sha256) continue ;;
+            esac
+            base="${f##*/}"                   # e.g., packprompt_UNRELEASED_linux_amd64.tar.gz
+            rest="${base#${BIN}_UNRELEASED_}" # linux_amd64.tar.gz
             mv "$f" "dist/${BIN}_v${VERSION}_${rest}"
           done
-          # Fix checksum filenames and contents
-          for c in dist/${BIN}_UNRELEASED_*.*.sha256 dist/${BIN}_UNRELEASED_*.sha256 2>/dev/null; do
-            [ -e "$c" ] || continue
-            base="${c##*/}"
-            rest="${base#${BIN}_UNRELEASED_}"
-            new="dist/${BIN}_v${VERSION}_${rest}"
-            # regenerate checksum to ensure correctness after rename
-            target="${new%.sha256}"
-            sha256sum "$target" > "$new"
-            rm -f "$c"
+
+          # 2) Recreate checksums cleanly for all (now versioned) artifacts
+          rm -f dist/*.sha256
+          for f in dist/*; do
+            [[ -f "$f" ]] || continue
+            case "$f" in
+              *.sha256) continue ;;
+            esac
+            sha256sum "$f" > "$f".sha256
           done
 
       - name: Upload assets to the GitHub Release

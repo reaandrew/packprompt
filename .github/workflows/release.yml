@@ -14,39 +14,9 @@ env:
   BINARY_NAME: "packprompt"
 
 jobs:
-  semantic_release:
-    name: semantic-release (tag & changelog)
-    runs-on: ubuntu-latest
-    outputs:
-      published: ${{ steps.sr.outputs.new_release_published }}
-      version:   ${{ steps.sr.outputs.new_release_version }}
-      tag:       ${{ steps.sr.outputs.new_release_git_tag }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: semantic-release
-        id: sr
-        uses: cycjimmy/semantic-release-action@v4
-        with:
-          extra_plugins: |
-            @semantic-release/changelog
-            @semantic-release/git
-            @semantic-release/github
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+  # 1) Build artifacts (no tagging yet)
   build:
-    name: build artifacts
-    needs: semantic_release
-    if: needs.semantic_release.outputs.published == 'true'
     runs-on: ubuntu-latest
-
     strategy:
       fail-fast: false
       matrix:
@@ -83,27 +53,23 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Go build + package
+      - name: Build (matrix)
         env:
           GOOS:   ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          VERSION: ${{ needs.semantic_release.outputs.version }}
-          EXE: ${{ env.BINARY_NAME }}${{ matrix.exe_suffix }}
+          EXE:    ${{ env.BINARY_NAME }}${{ matrix.exe_suffix }}
         run: |
           set -euo pipefail
           mkdir -p build dist
-          CGO_ENABLED=0 go build -trimpath \
-            -ldflags "-s -w -X 'main.version=${VERSION}'" \
-            -o "build/${EXE}" .
-
-          ARCHIVE_NAME="${{ env.BINARY_NAME }}_v${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive }}"
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "build/${EXE}" .
+          # Use a placeholder in filenames; we’ll rename after we know the version.
+          ARCHIVE_BASE="${{ env.BINARY_NAME }}_UNRELEASED_${{ matrix.goos }}_${{ matrix.goarch }}"
           if [ "${{ matrix.archive }}" = "zip" ]; then
-            (cd build && zip -q "../dist/${ARCHIVE_NAME}" "${EXE}")
+            (cd build && zip -q "../dist/${ARCHIVE_BASE}.zip" "${EXE}")
           else
-            (cd build && tar -czf "../dist/${ARCHIVE_NAME}" "${EXE}")
+            (cd build && tar -czf "../dist/${ARCHIVE_BASE}.tar.gz" "${EXE}")
           fi
-
-          (cd dist && sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256")
+          (cd dist && for f in *; do sha256sum "$f" > "$f.sha256"; done)
 
       - name: Upload job artifacts
         uses: actions/upload-artifact@v4
@@ -113,9 +79,38 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # 2) Decide version & create the release (only if all builds succeeded)
+  semantic_release:
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.sr.outputs.new_release_published }}
+      version:   ${{ steps.sr.outputs.new_release_version }}
+      tag:       ${{ steps.sr.outputs.new_release_git_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: semantic-release (GitHub only)
+        id: sr
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          # Only GitHub-related plugins; no npm
+          extra_plugins: |
+            @semantic-release/changelog
+            @semantic-release/git
+            @semantic-release/github
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 3) Rename built artifacts with the real version and attach to the release
   publish_assets:
-    name: attach assets to GitHub Release
-    needs: [semantic_release, build]
+    needs: semantic_release
     if: needs.semantic_release.outputs.published == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -126,7 +121,31 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Upload assets to the release
+      - name: Rename placeholders to versioned filenames
+        env:
+          VERSION: ${{ needs.semantic_release.outputs.version }}
+          BIN: ${{ env.BINARY_NAME }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in dist/${BIN}_UNRELEASED_*; do
+            base="${f##*/}"               # e.g., packprompt_UNRELEASED_linux_amd64.tar.gz
+            rest="${base#${BIN}_UNRELEASED_}"  # linux_amd64.tar.gz
+            mv "$f" "dist/${BIN}_v${VERSION}_${rest}"
+          done
+          # Fix checksum filenames and contents
+          for c in dist/${BIN}_UNRELEASED_*.*.sha256 dist/${BIN}_UNRELEASED_*.sha256 2>/dev/null; do
+            [ -e "$c" ] || continue
+            base="${c##*/}"
+            rest="${base#${BIN}_UNRELEASED_}"
+            new="dist/${BIN}_v${VERSION}_${rest}"
+            # regenerate checksum to ensure correctness after rename
+            target="${new%.sha256}"
+            sha256sum "$target" > "$new"
+            rm -f "$c"
+          done
+
+      - name: Upload assets to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.semantic_release.outputs.tag }}

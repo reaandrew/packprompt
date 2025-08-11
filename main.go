@@ -9,7 +9,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -133,17 +132,11 @@ func packCmd(args []string) {
 		}
 		mode := info.Mode().Perm()
 
-		pathB64 := base64.StdEncoding.EncodeToString([]byte(rel))
-		if _, err := fmt.Fprintf(w, "%s path_b64=%s mode=%04o ---\n", startMark, pathB64, mode); err != nil {
+		if _, err := fmt.Fprintf(w, "%s path=%s mode=%04o ---\n", startMark, rel, mode); err != nil {
 			return err
 		}
 
-		enc := base64.NewEncoder(base64.StdEncoding, w)
-		if _, err := io.Copy(enc, f); err != nil {
-			_ = enc.Close()
-			return err
-		}
-		if err := enc.Close(); err != nil {
+		if _, err := io.Copy(w, f); err != nil {
 			return err
 		}
 		if _, err := io.WriteString(w, "\n"+endMark+"\n"); err != nil {
@@ -173,7 +166,7 @@ func unpackCmd(args []string) {
 	defer f.Close()
 	r := bufio.NewReader(f)
 
-	headerRe := regexp.MustCompile(`^--- FILE path_b64=([^[:space:]]+)\ mode=([0-7]{3,4}) ---$`)
+	headerRe := regexp.MustCompile(`^--- FILE path=([^[:space:]]+)\ mode=([0-7]{3,4}) ---$`)
 
 	for {
 		line, err := readLine(r)
@@ -190,14 +183,8 @@ func unpackCmd(args []string) {
 		if m == nil {
 			fatal(fmt.Errorf("malformed header: %q", line))
 		}
-		pathB64 := m[1]
+		rel := m[1]
 		modeStr := m[2]
-
-		relBytes, err := base64.StdEncoding.DecodeString(pathB64)
-		if err != nil {
-			fatal(fmt.Errorf("decode path base64: %w", err))
-		}
-		rel := string(relBytes)
 		if strings.Contains(rel, "..") && !safeRel(rel) {
 			fatal(fmt.Errorf("unsafe path in archive: %q", rel))
 		}
@@ -206,7 +193,7 @@ func unpackCmd(args []string) {
 			fatal(err)
 		}
 
-		var b64buf bytes.Buffer
+		var contentBuf bytes.Buffer
 		for {
 			l, err := readLine(r)
 			if err != nil {
@@ -215,7 +202,8 @@ func unpackCmd(args []string) {
 			if l == endMark {
 				break
 			}
-			b64buf.WriteString(l)
+			contentBuf.WriteString(l)
+			contentBuf.WriteString("\n")
 		}
 
 		tmp := full + ".tmp~ftp"
@@ -223,8 +211,12 @@ func unpackCmd(args []string) {
 		if err != nil {
 			fatal(err)
 		}
-		dec := base64.NewDecoder(base64.StdEncoding, bytes.NewReader(b64buf.Bytes()))
-		if _, err := io.Copy(outf, dec); err != nil {
+		contentBytes := contentBuf.Bytes()
+		// Remove trailing newline if present
+		if len(contentBytes) > 0 && contentBytes[len(contentBytes)-1] == '\n' {
+			contentBytes = contentBytes[:len(contentBytes)-1]
+		}
+		if _, err := outf.Write(contentBytes); err != nil {
 			_ = outf.Close()
 			_ = os.Remove(tmp)
 			fatal(err)

@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/reaandrew/packprompt/compare/v1.0.3...v1.1.0) (2025-08-11)
+
+
+### Features
+
+* remove base64 encoding for paths and file contents ([9160f08](https://github.com/reaandrew/packprompt/commit/9160f085fc9d23962f83d50fcf37df55d3e70b2c))
+
 ## [1.0.3](https://github.com/reaandrew/packprompt/compare/v1.0.2...v1.0.3) (2025-08-10)
 
 
